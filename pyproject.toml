@@ -1,0 +1,33 @@
+[project]
+name = "pytest-testinfra-fabric"
+version = "0.1.0"
+description = "A pytest-testinfra backend driven by Fabric, for hosts reached through ProxyJump"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fabric>=3.2",
+    "pytest-testinfra>=10.1",
+]
+
+# Loaded automatically by pytest once this package is installed -- see
+# plugin.py's own docstring for why that's what makes the `fabric://` scheme
+# available without any project importing this package explicitly.
+[project.entry-points.pytest11]
+testinfra_fabric = "pytest_testinfra_fabric.plugin"
+
+[dependency-groups]
+dev = [
+    "fabric[pytest]>=3.2",
+    "pytest>=8.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pytest_testinfra_fabric"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
