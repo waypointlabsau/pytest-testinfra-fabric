@@ -82,6 +82,14 @@ SAFE_PREFIX_CHARS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456
 # A cold download over whatever route the host has to the internet.
 DOWNLOAD_TIMEOUT = 120
 
+# Grouped as one tuple so every place that has to survive a dropped connection
+# agrees on what one looks like -- including `session.connected`, which catches
+# the same set while opening.
+#
+# `Packetizer.read_all` raises a bare `EOFError()` when socket read returns zero bytes
+# Lower level then an SSHException
+CONNECTION_LOST = (OSError, SSHException, EOFError)
+
 
 class _BackendMeta(ABCMeta):
     """Carries `STASH_DIRECTORY` as a class-level property.
@@ -332,6 +340,11 @@ class FabricBackend(base.BaseBackend, metaclass=_BackendMeta):
         except CommandTimedOut as exc:
             logger.debug("run timed out after %ss: %s", self.timeout, command)
             raise TimeoutError(f"command timed out after {self.timeout}s: {command}") from exc
+        except CONNECTION_LOST as exc:
+            # testinfra's contract is a `CommandResult`, so a dead transport
+            # has to become one here rather than escape
+            logger.debug("run lost the connection: %s\n%r", command, exc)
+            return self.result(255, cmd, "", f"connection lost running: {command}\n{exc!r}")
         logger.debug(
             "run exited %s: %s\nstdout: %s\nstderr: %s",
             result.exited,
@@ -391,9 +404,9 @@ class FabricBackend(base.BaseBackend, metaclass=_BackendMeta):
             # Result below instead of raising.
             logger.debug("execute failed: %s\nstderr: %s", command, exc.result.stderr)
             raise AssertionError(f"command failed: {command}\n{exc.result.stderr}") from exc
-        except (OSError, SSHException) as exc:
-            logger.debug("execute lost the connection: %s\n%s", command, exc)
-            message = f"connection lost running: {command}\n{exc}"
+        except CONNECTION_LOST as exc:
+            logger.debug("execute lost the connection: %s\n%r", command, exc)
+            message = f"connection lost running: {command}\n{exc!r}"
             if check:
                 raise AssertionError(message) from exc
             return Result(command=command, exited=255, stderr=message)
@@ -835,5 +848,5 @@ class FabricBackend(base.BaseBackend, metaclass=_BackendMeta):
             if _stash_directory == owned:
                 _stash_directory = None
         if "connection" in self.__dict__:
-            with contextlib.suppress(OSError, SSHException):
+            with contextlib.suppress(*CONNECTION_LOST):
                 self.connection.close()

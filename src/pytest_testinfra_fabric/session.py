@@ -14,9 +14,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from paramiko.ssh_exception import SSHException
-
-from .backend import FabricBackend
+from .backend import CONNECTION_LOST, FabricBackend
 
 logger = logging.getLogger(__name__)
 
@@ -84,9 +82,9 @@ def connected(
     try:
         try:
             connection = backend.connection
-        except (OSError, SSHException) as error:
+        except CONNECTION_LOST as error:
             where = f"; see {log_path}" if log_path is not None else ""
-            raise AssertionError(f"could not connect to {target}: {error}{where}") from error
+            raise AssertionError(f"could not connect to {target}: {error!r}{where}") from error
         connection.transport.set_keepalive(keepalive)
         yield backend
     finally:

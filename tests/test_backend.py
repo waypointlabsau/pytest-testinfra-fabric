@@ -54,7 +54,7 @@ def test_run_returns_command_result_without_raising(remote, fabric_backend):
 
 
 def _breaks_with(fabric_backend: FabricBackend, error: BaseException) -> None:
-    """Make the next `execute` fail the way a dead transport does.
+    """Make the next command fail the way a dead transport does.
 
     Assigns into the instance dict rather than patching the class, because
     that is exactly where `functools.cached_property` stores `connection` --
@@ -67,11 +67,17 @@ def _breaks_with(fabric_backend: FabricBackend, error: BaseException) -> None:
     fabric_backend.__dict__["connection"] = SimpleNamespace(run=run)
 
 
-@pytest.mark.parametrize(
-    "error",
-    [SSHException("socket is closed"), OSError("Socket is closed")],
-    ids=["sshexception", "oserror"],
-)
+# `paramiko.packet.Packetizer.read_all` raises an empty EOFError()
+# when a socket read returns zero bytes
+DEAD_TRANSPORTS = [
+    SSHException("socket is closed"),
+    OSError("Socket is closed"),
+    EOFError(),
+]
+DEAD_TRANSPORT_IDS = ["sshexception", "oserror", "eoferror"]
+
+
+@pytest.mark.parametrize("error", DEAD_TRANSPORTS, ids=DEAD_TRANSPORT_IDS)
 def test_execute_reports_a_dead_connection_as_exit_255(fabric_backend, error):
     """With check=False a broken transport is an ordinary failed Result, not an
     exception -- that is what lets a predicate polled through eventually()
@@ -83,14 +89,31 @@ def test_execute_reports_a_dead_connection_as_exit_255(fabric_backend, error):
 
     assert result.exited == 255
     assert not result.ok
-    assert "closed" in result.stderr
+    # The type name rather than the message: a bare EOFError has no message,
+    # so naming the class is the only thing that tells a reader which of these
+    # happened -- which is why the reason is rendered with `!r`.
+    assert type(error).__name__ in result.stderr
 
 
-def test_execute_raises_on_a_dead_connection_when_checked(fabric_backend):
-    _breaks_with(fabric_backend, SSHException("socket is closed"))
+@pytest.mark.parametrize("error", DEAD_TRANSPORTS, ids=DEAD_TRANSPORT_IDS)
+def test_execute_raises_on_a_dead_connection_when_checked(fabric_backend, error):
+    _breaks_with(fabric_backend, error)
 
     with pytest.raises(AssertionError, match="connection lost running: true"):
         fabric_backend.execute("true")
+
+
+@pytest.mark.parametrize("error", DEAD_TRANSPORTS, ids=DEAD_TRANSPORT_IDS)
+def test_run_reports_a_dead_connection_as_exit_255(fabric_backend, error):
+    """`run()` is testinfra's contract method, and testinfra callers read an
+    exit status -- so a dead transport has to become a CommandResult here too,
+    not an exception out of the middle of paramiko."""
+    _breaks_with(fabric_backend, error)
+
+    result = fabric_backend.run("true")
+
+    assert result.rc == 255
+    assert type(error).__name__ in result.stderr
 
 
 def test_execute_reports_a_timeout_as_exit_255_when_unchecked(fabric_backend):
