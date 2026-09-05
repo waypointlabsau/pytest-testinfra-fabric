@@ -544,20 +544,35 @@ class FabricBackend(base.BaseBackend, metaclass=_BackendMeta):
         """Kill what `stale_scratch` found and remove its directories.
 
         The destructive half, deliberately separate: signalling a process
-        group as root, inferred from debris, is not something a caller should
-        be able to do by accident. Returns what it acted on.
+        group, inferred from debris, is not something a caller should be able
+        to do by accident. Returns what it FOUND, which is not the same as
+        what went -- see the warning below.
 
         One signal per process group rather than per process -- the group is
         what reaches a `sudo`/wrapper/interpreter chain whose members do not
         forward signals to each other, and everything the leader forked.
+
+        Elevated only when `sudo_cleanup` says the debris is root-owned, the
+        same flag `close()` removes this backend's own directory under. Both
+        commands below used to elevate unconditionally, which is silently
+        wrong on a host that grants no blanket sudo: they tolerate failure, so
+        a refused `sudo` swept nothing at all and this still returned
+        everything it had found. A caller that prints the return value then
+        reports a host it cleaned while every process is still running.
+
+        Which is why a caller that must not be wrong about the outcome should
+        call `stale_scratch` again afterwards rather than trust this return
+        value. Even privileged, TERM is asynchronous and a process is entitled
+        to take a moment over it.
         """
         stale = self.stale_scratch()
+        prefix = "sudo " if self.sudo_cleanup else ""
         for pgid in sorted(stale.process_groups):
             logger.debug("sweep_stale: killing process group %s", pgid)
-            self.execute(f'sudo kill -TERM -"{pgid}" 2>/dev/null || true', check=False)
+            self.execute(f'{prefix}kill -TERM -"{pgid}" 2>/dev/null || true', check=False)
         if stale.directories:
             logger.debug("sweep_stale: removing %s", " ".join(stale.directories))
-            self.execute(f"sudo rm -rf {self.stash_glob}", check=False)
+            self.execute(f"{prefix}rm -rf {self.stash_glob}", check=False)
         return stale
 
     def process(self, pid_file: str, *, group: bool = True, sudo: bool = False) -> RemoteProcess:

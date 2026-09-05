@@ -1,11 +1,14 @@
 """Unit tests for finding, and then sweeping, what an earlier run left behind.
 
 The selection in `stale_scratch` is the highest-consequence code in this
-package: what it returns is what `sweep_stale` signals, as a process GROUP,
-with `sudo`. So it is driven here against canned `ps` output rather than
-against a host, which is the only way to pin the cases that matter -- two
-processes sharing a group, a line that must not match, and this run's own
-directory.
+package: what it returns is what `sweep_stale` signals, as a process GROUP.
+So it is driven here against canned `ps` output rather than against a host,
+which is the only way to pin the cases that matter -- two processes sharing a
+group, a line that must not match, and this run's own directory.
+
+Whether the signal is elevated is pinned here too, in both directions: an
+unprivileged sweep is the default and a `sudo` one is opt-in, because the
+commands tolerate failure and so an elevation the host refuses is silent.
 """
 
 from __future__ import annotations
@@ -157,11 +160,43 @@ def test_sweep_stale_signals_each_group_once_then_removes(backend) -> None:
 
     recorder = backend.__dict__["connection"]
     assert recorder.commands[2:] == [
+        'kill -TERM -"1234" 2>/dev/null || true',
+        'kill -TERM -"5678" 2>/dev/null || true',
+        "rm -rf /tmp/fabric.*",
+    ]
+    assert sorted(swept.process_groups) == ["1234", "5678"]
+
+
+def test_sweep_stale_is_unprivileged_by_default() -> None:
+    """The regression this pins: `sudo` used to be hardcoded here, and both
+    commands tolerate failure. On a host granting the login user no blanket
+    sudo -- which is the shape of a least-privilege CI host -- every kill and
+    the rm were refused, nothing was swept, and `sweep_stale` still returned
+    the full list of what it had found for the caller to print as a success.
+    """
+    backend = FabricBackend("user@host")
+    recording(backend, [out(f"{STALE_DIR}\n"), out(PS_LISTING)])
+
+    backend.sweep_stale()
+
+    assert not any(
+        command.startswith("sudo") for command in backend.__dict__["connection"].commands
+    )
+
+
+def test_sweep_stale_elevates_when_the_debris_is_root_owned() -> None:
+    """`sudo_cleanup` is for a consumer whose processes really do run as root;
+    it is the same flag `close()` removes this backend's own directory under."""
+    backend = FabricBackend("user@host", sudo_cleanup=True)
+    recorder = recording(backend, [out(f"{STALE_DIR}\n"), out(PS_LISTING)])
+
+    backend.sweep_stale()
+
+    assert recorder.commands[2:] == [
         'sudo kill -TERM -"1234" 2>/dev/null || true',
         'sudo kill -TERM -"5678" 2>/dev/null || true',
         "sudo rm -rf /tmp/fabric.*",
     ]
-    assert sorted(swept.process_groups) == ["1234", "5678"]
 
 
 def test_sweep_stale_does_nothing_on_a_clean_host(backend) -> None:
@@ -180,4 +215,4 @@ def test_sweep_stale_removes_directories_with_no_live_process(backend) -> None:
 
     backend.sweep_stale()
 
-    assert recorder.last == "sudo rm -rf /tmp/fabric.*"
+    assert recorder.last == "rm -rf /tmp/fabric.*"
